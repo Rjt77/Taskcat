@@ -1,0 +1,434 @@
+AWSTemplateFormatVersion: '2010-09-09'
+#Transform: 'AWS::Serverless-2016-10-31'
+Description: Manages the schedule for the various meetings across TechArch
+Resources:
+  MyS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: taautomationbucket
+  TAAutomation:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: 'Function delegates tasks for various TechArch meetings.'
+      Handler: master.func
+      MemorySize: 128
+      Role:
+        Fn::GetAtt: 
+            - "LambdaExecutionRole"
+            - "Arn"
+      Runtime: python2.7
+      Timeout: 300
+    DependsOn: LambdaExecutionRole  
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /mgmt/
+      Policies:
+        - PolicyName: S3logspolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource: 
+                  - 'arn:aws:s3:::taautomationbucket/*'
+        - PolicyName: DynamoDBaccessPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:UpdateItem'
+                Resource: 
+                  - 'arn:aws:dynamodb:us-east-1:855777208844:table/SNET_Automation'
+                  - 'arn:aws:dynamodb:us-east-1:855777208844:table/SNETTechArchManagers'
+        - PolicyName: SESaccesspolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ses:SendTemplatedEmail'
+                Resource:
+                  - '*'
+        - PolicyName: CloudWatchlogsPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:   
+                  - 'logs:PutMetricFilter'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutRetentionPolicy'
+                  - 'logs:PutLogEvents'
+                  - 'logs:CreateLogGroup'
+                Resource:
+                  - '*'
+  EventsStepFunctionsRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /mgmt/
+      Policies:
+        - PolicyName: ta_automation_step_functions_policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource: 
+                  - 'arn:aws:states:us-east-1:855777208844:stateMachine:TA_Automation_CFT_Controlled'
+  MeetingMinutesScheduledRule: 
+    Type: "AWS::Events::Rule"
+    Properties: 
+      Description: "Every alternate Monday in the prior week to the call this event will kick off the selection process."
+      ScheduleExpression: "rate(14 days)"
+      State: "ENABLED"
+      Name: "TA-Team-MeetingMinutes-Rotation-2"
+      Targets: 
+        - 
+          Arn: !Join [ "", [ "arn:aws:states:", !Ref "AWS::Region", ":855777208844:stateMachine:TA_Automation_CFT_Controlled"] ]
+          Id: "TargetFunctionV1"
+          InputTransformer: 
+            InputPathsMap: 
+              "time": "$.time"            
+            InputTemplate: "{\"task\": \"MeetingMinutes\", \"time\": <time>}"
+          RoleArn:               
+            Fn::GetAtt: 
+                - "EventsStepFunctionsRole"
+                - "Arn"
+  ProjectListScheduledRule: 
+    Type: "AWS::Events::Rule"
+    Properties: 
+      Description: "Every Monday will kick off Lambda function to select resource to monitor SharePoint Tech Arch project list for following week"
+      ScheduleExpression: "cron(0 10 ? * MON *)"
+      State: "ENABLED"
+      Name: "TA-ProjectList-Monitoring-2"
+      Targets: 
+        - 
+          Arn: !Join [ "", [ "arn:aws:states:", !Ref "AWS::Region", ":855777208844:stateMachine:TA_Automation_CFT_Controlled"] ]
+          Id: "TargetFunctionV1"
+          InputTransformer: 
+            InputPathsMap: 
+              "time": "$.time"            
+            InputTemplate: "{\"task\": \"ProjectList\", \"time\": <time>}"
+          RoleArn:               
+            Fn::GetAtt: 
+                - "EventsStepFunctionsRole"
+                - "Arn"
+  QuarterlyScheduledRule: 
+    Type: "AWS::Events::Rule"
+    Properties: 
+      Description: "Every first Monday of the start of a new quarter will start the process of selection facilitator for our quarterly calls."
+      ScheduleExpression: "cron(0 12 ? 1/3 MON#1 *)"
+      State: "ENABLED"
+      Name: "TA-Quarterly-Meeting-2"
+      Targets: 
+        - 
+          Arn: !Join [ "", [ "arn:aws:states:", !Ref "AWS::Region", ":855777208844:stateMachine:TA_Automation_CFT_Controlled"] ]
+          Id: "TargetFunctionV1"
+          InputTransformer: 
+            InputPathsMap: 
+              "time": "$.time"            
+            InputTemplate: "{\"task\": \"QVC\", \"time\": <time>}"
+          RoleArn:               
+            Fn::GetAtt: 
+                - "EventsStepFunctionsRole"
+                - "Arn"
+  RedlockScheduledRule: 
+    Type: "AWS::Events::Rule"
+    Properties: 
+      Description: "Every Monday will kick off the selection for rotation of the AWS security RedLock reporting"
+      ScheduleExpression: "cron(0 13 ? * MON *)"
+      State: "ENABLED"
+      Name: "TA-RedLockReporting-Rotation-2"
+      Targets: 
+        - 
+          Arn: !Join [ "", [ "arn:aws:states:", !Ref "AWS::Region", ":855777208844:stateMachine:TA_Automation_CFT_Controlled"] ]
+          Id: "TargetFunctionV1"
+          InputTransformer: 
+            InputPathsMap: 
+              "time": "$.time"            
+            InputTemplate: "{\"task\": \"RedLock\", \"time\": <time>}"
+          RoleArn:
+              Fn::GetAtt: 
+                - "EventsStepFunctionsRole"
+                - "Arn"
+  StepFunctionsInvokeRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - states.us-east-1.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /mgmt/
+      Policies:
+        - PolicyName: ta_autoamtion_step_functions_invoke_policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  Fn::GetAtt: 
+                    - "TAAutomation"
+                    - "Arn"
+    DependsOn: TAAutomation
+  MyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: TA_Automation_CFT_Controlled
+      DefinitionString: |-
+        {
+          "Comment": "Automating the Tech Arch Meeting Minutes.",
+          "StartAt": "EnterCount",
+          "States": {
+            "EnterReset": {
+              "Type": "Pass",
+              "Result": "Reset",
+              "ResultPath": "$.value",
+              "Next": "Reset"
+            },
+            
+            "Reset":{
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:855777208844:function:ta-automation-TAAutomation-151I4DDLJO9LB",
+              "Next": "CheckEndStatus"
+            },
+            "EnterCount": {
+              "Type": "Pass",
+              "Result": 1,
+              "ResultPath": "$.count",
+              "Next": "EnterFirstEmail"
+            },
+             "EnterFirstEmail": {
+              "Type": "Pass",
+              "Result": "FirstEmail",
+              "ResultPath": "$.value",
+              "Next": "FirstEmail"
+            },
+            "FirstEmail": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:855777208844:function:ta-automation-TAAutomation-151I4DDLJO9LB",
+            "Next": "FetchItem"
+            },
+            "FetchItem": {
+              "Type" : "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.value",
+                  "StringEquals": "None",
+                  "Next": "NoItemFetched"
+                },
+                {
+                  "Variable": "$.value",
+                  "StringEquals": "FirstEmail",
+                  "Next": "ItemFetched_EmailSent"
+                }
+              ] 
+            },
+            "Wait300Seconds": {
+              "Type": "Wait",
+              "Seconds": 300,
+              "Next": "EnterQueryTable"
+            },
+           "EnterQueryTable": {
+              "Type": "Pass",
+              "Result": "Query",
+              "ResultPath": "$.value",
+              "Next": "QueryTable"
+            },
+            "QueryTable": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:855777208844:function:ta-automation-TAAutomation-151I4DDLJO9LB",
+            "Next": "CheckAvailability"
+            },
+          "CheckAvailability": {
+            "Type" : "Choice",
+            "Choices": [
+              {
+                "Variable": "$.value",
+                "StringEquals": "Yes",
+                "Next": "Available"
+              },
+              {
+                "Variable": "$.value",
+                "StringEquals": "No",
+                "Next": "NotAvailable"
+              }
+              ],
+            "Default": "Wait300Seconds"
+            },
+            "NoItemFetched": {
+            "Type": "Pass",
+            "Next": "EnterReset"
+            },
+            "ItemFetched_EmailSent": {
+            "Type": "Pass",
+            "Next": "Wait300Seconds"
+            },
+          "NotAvailable": {
+               "Type": "Pass",
+               "Next": "EnterFirstEmail"
+            },
+           "Available": {
+            "Type": "Pass",
+             "Next": "EnterReset"
+            },
+            "CheckEndStatus": {
+            "Type" : "Choice",
+            "Choices": [
+              {
+                "Variable": "$.value",
+                "StringEquals": "EnterFirstEmail",
+                "Next": "EnterFirstEmail"
+              },
+              {
+                "Variable": "$.value",
+                "StringEquals": "End",
+                "Next": "EndFunction"
+              }
+              ]
+            },
+              "EndFunction": {
+              "Type": "Pass",
+              "End": true
+            }
+
+          }
+        }
+      RoleArn:
+        Fn::GetAtt: 
+          - "StepFunctionsInvokeRole"
+          - "Arn"
+    DependsOn: StepFunctionsInvokeRole
+  TARestAPI:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Description: API for accepting or rejecting task
+      Name: TA_Automation_2
+  GetResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      ParentId: !GetAtt TARestAPI.RootResourceId 
+      PathPart: availability
+      RestApiId: !Ref TARestAPI
+    DependsOn: TARestAPI
+  getMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:          
+        Credentials: 
+          Fn::GetAtt: 
+            - "LambdaExecutionRole"
+            - "Arn"
+        IntegrationHttpMethod: POST
+        IntegrationResponses:
+          - 
+            StatusCode: 200
+            ResponseTemplates:
+              text/html: |
+                <html>
+                  <head> 
+                      <title>
+                          Tech Arch Automation Portal
+                      </title>
+                  </head>
+                  <body>
+                      Thanks for your response. You will receive an email shortly!
+                  </body>
+                </html>
+        Type: AWS
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          application/json: |
+            {
+              "value" : $input.params('value'),
+              "firstname" : "$input.params('firstname')",
+              "lastname" : "$input.params('lastname')",
+              "task" : "$input.params('task')"
+            }
+        Uri: !Join [ "", [ 
+          "arn:aws:apigateway:", 
+          !Ref "AWS::Region",
+          ":lambda:path/2015-03-31/functions/",
+          !GetAtt TAAutomation.Arn,
+          "/invocations"] ]
+      MethodResponses:
+        - 
+          StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            text/html: Empty
+      ResourceId: !Ref GetResource
+      RestApiId: !Ref TARestAPI
+      RequestValidatorId: !Ref apiRequestValidator
+      RequestParameters:
+        method.request.querystring.firstname: true
+        method.request.querystring.lastname: true
+        method.request.querystring.task: true
+        method.request.querystring.value: true 
+    DependsOn: 
+      - TARestAPI
+      - GetResource
+      - TAAutomation
+      - apiRequestValidator
+  apiRequestValidator:
+    Type: "AWS::ApiGateway::RequestValidator"
+    Properties:
+      Name: Validate body, query string parameters, and headers
+      RestApiId: !Ref TARestAPI
+      ValidateRequestBody: true
+      ValidateRequestParameters: true
+    DependsOn:
+      - TARestAPI      
+  apiStage:
+    Type: "AWS::ApiGateway::Stage"
+    Properties:
+      DeploymentId: !Ref apiDeployment
+      Description: TA-Automation Production      
+      RestApiId: !Ref TARestAPI
+      StageName: techarch
+    DependsOn:
+      - TARestAPI
+      - apiDeployment
+  apiDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      Description: Production deployment for TA-Automation
+      RestApiId: !Ref TARestAPI
+    DependsOn:
+      - TARestAPI   
+      - getMethod
